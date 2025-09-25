@@ -273,13 +273,21 @@ if "upscaled" not in st.session_state:
 
 
 cfg = load_config()
-client = create_openrouter_client(cfg.openrouter_api_key)
+# Create client only if API key is present to avoid startup crash when secrets.toml is invalid/missing
+client = None
+try:
+    if cfg.openrouter_api_key:
+        client = create_openrouter_client(cfg.openrouter_api_key)
+    else:
+        logging.warning("OPENROUTER_API_KEY missing; analysis and image generation will be disabled.")
+except Exception as e:
+    logging.error(f"Failed to initialize OpenRouter client: {e}")
 
 
 with st.sidebar:
 
     # Connection status with improved styling
-    if not cfg.openrouter_api_key:
+    if not cfg.openrouter_api_key or client is None:
         st.error("🔑 OPENROUTER_API_KEY is missing. Set it in v2/.env and restart.")
     else:
         ok, msg = connectivity_probe()

@@ -16,4 +16,5 @@ requests==2.32.3
 torch>=2.1.0
 realesrgan==0.3.0
 basicsr==1.4.2
+httpx<0.28
 
