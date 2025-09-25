@@ -1,0 +1,20 @@
+streamlit==1.38.0
+openai>=1.40.0
+requests>=2.31.0
+python-dotenv>=1.0.1
+pillow>=10.3.0
+opencv-python-headless>=4.9.0.80
+numpy>=1.26.4
+python-dotenv==1.0.1
+openai==1.43.0
+pillow==10.4.0
+opencv-python==4.10.0.84
+numpy==1.26.4
+requests==2.32.3
+
+# Upscaler dependencies
+torch>=2.1.0; platform_system!="Windows"
+torch>=2.1.0+cu121; platform_system=="Windows"
+realesrgan==0.3.0
+basicsr==1.4.2
+
