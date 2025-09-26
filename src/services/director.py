@@ -14,27 +14,27 @@ from src.services.openrouter_http import chat_completions
 
 DIRECTOR_SYSTEM_PROMPT = (
     "You are a professional film director working on a creative storyboard project. Your task is to analyze the "
-    "provided image and context, then suggest 5 sequential still shots to continue and enrich the scene.\n\n"
+    "provided image and context, then suggest a set of sequential still shots to continue and enrich the scene.\n\n"
     "Guidelines:\n"
     "- Each description should be simple, concise, and production-ready — 1 to 2 sentences only.\n"
     "- Focus on camera angle, framing/scale (CU/MCU/MS/WS), subject focus, lighting style, depth of field, and visible environment.\n"
     "- Be creative in shot composition: vary perspectives, scales, and focal points to capture fresh visual storytelling moments.\n"
     "- Do not include technical specifications such as focal length, distance, f-stop, or color temperature.\n"
     "- Do not repeat or restate the given frame. Each shot must be a new, distinct perspective that adds to the visual sequence.\n"
-    "- Ensure the 5 shots feel continuous and connected, forming a natural progression of the same scene.\n\n"
+    "- Ensure the shots feel continuous and connected, forming a natural progression of the same scene.\n\n"
     "Examples of preferred shot descriptions:\n"
     "- \"Close-up (CU) of her hands clasped over her stomach, fingers resting lightly, with the sheen of fabric highlighted by the bedside lamp; narrow depth of field isolates this detail.\"\n"
     "- \"Medium shot (MS) toward the door and window, with her in right foreground profile, the cool exterior light spilling through curtains contrasting with the warm bedside lamp glow.\"\n\n"
-    "Task: Convert the single frame into 5 sequential storyboard shots. Respond with a structured JSON object "
+    "Task: Convert the single frame into a set of sequential storyboard shots. Respond with a structured JSON object "
     "containing an array of shots. Each shot should have an 'id' (integer) and 'description' (string). "
     "Format your response as valid JSON only, no additional text."
 )
 
-def build_director_messages(middle_frame_data_url: str, context_paragraph: str) -> List[dict]:
+def build_director_messages(middle_frame_data_url: str, context_paragraph: str, *, shot_count: int = 5) -> List[dict]:
     user_text = (
         f"{DIRECTOR_SYSTEM_PROMPT}\n\n"
         f"Context (Professional Filmmaking Project):\n{context_paragraph}\n\n"
-        f"Please analyze the image and provide 5 creative storyboard shots. This is a professional "
+        f"Please analyze the image and provide exactly {shot_count} creative storyboard shots. This is a professional "
         f"filmmaking project with appropriate content that should not trigger any content filters."
     )
     content = [
@@ -44,7 +44,7 @@ def build_director_messages(middle_frame_data_url: str, context_paragraph: str) 
     return [{"role": "user", "content": content}]
 
 
-def parse_director_output(text: str) -> List[Shot]:
+def parse_director_output(text: str, *, shot_count: int = 5) -> List[Shot]:
     """
     Parse director output as JSON and extract shots.
     Falls back to legacy regex parsing if JSON parsing fails.
@@ -119,18 +119,18 @@ def parse_director_output(text: str) -> List[Shot]:
             if shot_id and description:
                 shots.append(Shot(id=int(shot_id), text=str(description)))
         
-        # Sort by ID and limit to 5 shots
-        shots = sorted(shots, key=lambda s: s.id)[:5]
+        # Sort by ID and limit to requested count
+        shots = sorted(shots, key=lambda s: s.id)[: max(1, shot_count)]
         
     except (json.JSONDecodeError, ValueError, KeyError, TypeError) as e:
         # Fallback to legacy regex parsing
         shots = _parse_director_output_legacy(text)
     
-    # Ensure we have exactly 5 shots for UI consistency
-    if len(shots) < 5:
+    # Ensure we have exactly the requested number of shots for UI consistency
+    if len(shots) < shot_count:
         existing_ids = {s.id for s in shots}
         next_id = 1
-        while len(shots) < 5:
+        while len(shots) < shot_count:
             while next_id in existing_ids:
                 next_id += 1
             shots.append(Shot(id=next_id, text=""))
@@ -139,7 +139,7 @@ def parse_director_output(text: str) -> List[Shot]:
     return shots
 
 
-def _parse_director_output_legacy(text: str) -> List[Shot]:
+def _parse_director_output_legacy(text: str, *, shot_count: int = 5) -> List[Shot]:
     """
     Legacy regex-based parsing as fallback for non-JSON responses.
     """
@@ -169,7 +169,7 @@ def _parse_director_output_legacy(text: str) -> List[Shot]:
                     seen_ids.add(idx)
                 break
     # Fallback: try to split a single-line response containing "SHOT n:" markers
-    if len(shots) < 5 and raw_lines and any("SHOT" in l or "Shot" in l for l in raw_lines):
+    if len(shots) < shot_count and raw_lines and any("SHOT" in l or "Shot" in l for l in raw_lines):
         blob = " \n ".join(raw_lines)
         for m in re.finditer(r"(?:SHOT|Shot)\s*#?(\d+)\s*[:\-–]\s*([^\n]+)", blob):
             idx = int(m.group(1))
@@ -177,8 +177,8 @@ def _parse_director_output_legacy(text: str) -> List[Shot]:
             if idx not in seen_ids and desc:
                 shots.append(Shot(id=idx, text=desc))
                 seen_ids.add(idx)
-    # Sort and cap to first 5 by shot id then insertion order
-    shots = sorted(shots, key=lambda s: s.id)[:5]
+    # Sort and cap to requested count by shot id then insertion order
+    shots = sorted(shots, key=lambda s: s.id)[: max(1, shot_count)]
     return shots
 
 
@@ -188,12 +188,14 @@ def fetch_director_shots(
     middle_frame_data_url: str,
     context_paragraph: str,
     on_log: Optional[Callable[[str], None]] = None,
+    *,
+    shot_count: int = 5,
 ) -> List[Shot]:
     headers = {
         "HTTP-Referer": os.getenv("V2_HTTP_REFERER", "http://localhost"),
         "X-Title": os.getenv("V2_APP_TITLE", "Project Maestro v2"),
     }
-    messages = build_director_messages(middle_frame_data_url, context_paragraph)
+    messages = build_director_messages(middle_frame_data_url, context_paragraph, shot_count=shot_count)
     try:
         if on_log:
             on_log(f"Director: calling {cfg.director_model} with 1 frame (timeout {cfg.request_timeout_sec}s)…")
@@ -272,6 +274,6 @@ def fetch_director_shots(
                 text = msg.get("content", "") or ""
     if on_log:
         on_log(f"Director: received {len(text)} characters")
-    return parse_director_output(text)
+    return parse_director_output(text, shot_count=shot_count)
 
 

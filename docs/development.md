@@ -21,16 +21,19 @@ Implementation Notes
 
 Run Locally
 
-1) pip install -r v2/requirements.txt
-2) streamlit run v2/src/app.py
+1) pip install -r requirements.txt
+2) Streamlit UI: `streamlit run src/app.py`
+3) Desktop GUI: `python -m src.gui.main` (loads `.env` from project root)
 
 Testing
 
 - Unit-test frame extraction and parsing logic
 - Mock API calls for CI
 
-Deployment
+Packaging (Windows)
 
-- This folder can be moved and run as-is on a Streamlit-compatible host
+- One-folder build with PyInstaller:
+  - `pyinstaller --noconfirm --clean --name MaestroV2 --onedir --add-data "weights;weights" --hidden-import cv2 --hidden-import basicsr --hidden-import realesrgan src/gui/main.py`
+  - Include `weights/realesr-general-x4v3.pth` in the build directory
 
 

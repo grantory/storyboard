@@ -30,11 +30,13 @@ def build_image_messages(style_image_data_url: str, shot_text: str) -> List[dict
     return [{"role": "user", "content": content}]
 
 
-def _find_data_image_in_obj(obj) -> Optional[str]:
+def _find_data_or_http_image_in_obj(obj) -> Optional[str]:
     try:
         # Direct string containing data URL or embedded data:image URL
         if isinstance(obj, str):
             if obj.startswith("data:image"):
+                return obj
+            if obj.startswith("http://") or obj.startswith("https://"):
                 return obj
             if "data:image/" in obj:
                 s = obj.find("data:image/")
@@ -50,8 +52,10 @@ def _find_data_image_in_obj(obj) -> Optional[str]:
                 url = obj.get("image_url", {}).get("url")
                 if isinstance(url, str) and url.startswith("data:image"):
                     return url
+                if isinstance(url, str) and (url.startswith("http://") or url.startswith("https://")):
+                    return url
                 if isinstance(url, str) and "data:image/" in url:
-                    return _find_data_image_in_obj(url)
+                    return _find_data_or_http_image_in_obj(url)
             # direct url or image_url nesting
             url = obj.get("url") or obj.get("image_url")
             if isinstance(url, str) and url.startswith("data:image/"):
@@ -61,12 +65,12 @@ def _find_data_image_in_obj(obj) -> Optional[str]:
                 if isinstance(inner, str) and inner.startswith("data:image/"):
                     return inner
             for v in obj.values():
-                found = _find_data_image_in_obj(v)
+                found = _find_data_or_http_image_in_obj(v)
                 if found:
                     return found
         if isinstance(obj, list):
             for it in obj:
-                found = _find_data_image_in_obj(it)
+                found = _find_data_or_http_image_in_obj(it)
                 if found:
                     return found
     except Exception:
@@ -104,8 +108,15 @@ def extract_image_data_url_from_response(resp: Union[dict, object]) -> Optional[
                         return _find_data_image_in_obj(url)
         # 2) content list items
         if isinstance(content, list):
-            candidate = _find_data_image_in_obj(content)
+            candidate = _find_data_or_http_image_in_obj(content)
             if candidate:
+                if isinstance(candidate, str) and (candidate.startswith("http://") or candidate.startswith("https://")):
+                    try:
+                        resp2 = requests.get(candidate, timeout=30)
+                        mime2 = resp2.headers.get("content-type", "image/png")
+                        return bytes_to_data_url(resp2.content, mime=mime2)
+                    except Exception:
+                        return None
                 return candidate
         # 3) fallback to plain content string
         if isinstance(content, str):
@@ -118,8 +129,15 @@ def extract_image_data_url_from_response(resp: Union[dict, object]) -> Optional[
                     return bytes_to_data_url(resp2.content, mime=mime2)
                 except Exception:
                     pass
-            deep = _find_data_image_in_obj(content)
+            deep = _find_data_or_http_image_in_obj(content)
             if deep:
+                if isinstance(deep, str) and (deep.startswith("http://") or deep.startswith("https://")):
+                    try:
+                        r3 = requests.get(deep, timeout=30)
+                        mime3 = r3.headers.get("content-type", "image/png")
+                        return bytes_to_data_url(r3.content, mime=mime3)
+                    except Exception:
+                        return None
                 return deep
         # Final attempt: convert SDK object to dict and reuse dict path
         try:
@@ -157,11 +175,26 @@ def extract_image_data_url_from_response(resp: Union[dict, object]) -> Optional[
                         return deep
         # 2) content list
         content = msg.get("content")
-        candidate = _find_data_image_in_obj(content)
+        candidate = _find_data_or_http_image_in_obj(content)
         if candidate:
+            if isinstance(candidate, str) and (candidate.startswith("http://") or candidate.startswith("https://")):
+                try:
+                    r2 = requests.get(candidate, timeout=30)
+                    mime2 = r2.headers.get("content-type", "image/png")
+                    return bytes_to_data_url(r2.content, mime=mime2)
+                except Exception:
+                    return None
             return candidate
         # 3) deep scan of entire response as last resort
-        return _find_data_image_in_obj(resp)
+        deep2 = _find_data_or_http_image_in_obj(resp)
+        if isinstance(deep2, str) and (deep2.startswith("http://") or deep2.startswith("https://")):
+            try:
+                r4 = requests.get(deep2, timeout=30)
+                mime4 = r4.headers.get("content-type", "image/png")
+                return bytes_to_data_url(r4.content, mime=mime4)
+            except Exception:
+                return None
+        return deep2
     else:
         return None
 
@@ -204,6 +237,11 @@ def generate_image(client: OpenAI, cfg: V2Config, style_image_data_url: str, sho
     data_url = extract_image_data_url_from_response(resp)
     if not data_url:
         raise RuntimeError("No image returned by provider")
+    if on_log:
+        try:
+            on_log(f"Images: received image data url length={len(data_url)}")
+        except Exception:
+            pass
     return data_url
 
 

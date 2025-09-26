@@ -91,3 +91,10 @@ goto start
 echo.
 echo Thanks for using Git Commit Helper!
 pause
+:: Build GUI (one-folder)
+echo.
+echo ========================================
+echo Build GUI (one-folder)
+echo ========================================
+echo.
+pyinstaller --noconfirm --clean --name MaestroV2 --onedir --add-data "weights;weights" --hidden-import cv2 --hidden-import basicsr --hidden-import realesrgan src/gui/main.py

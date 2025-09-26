@@ -8,6 +8,8 @@ import streamlit as st
 import sys
 from dotenv import load_dotenv
 import logging
+from io import BytesIO
+from PIL import Image
 
 # Ensure v2 folder is on sys.path so we can import "src.*" without touching v1
 V2_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -284,6 +286,62 @@ except Exception as e:
     logging.error(f"Failed to initialize OpenRouter client: {e}")
 
 
+DEBUG_IMAGES = (getattr(st, "secrets", {}).get("V2_DEBUG_IMAGES", "0") == "1") if hasattr(st, "secrets") else (os.getenv("V2_DEBUG_IMAGES", "0") == "1")
+
+
+def _normalize_data_url(value: str) -> str:
+    s = (value or "").strip()
+    if (s.startswith("'") and s.endswith("'")) or (s.startswith('"') and s.endswith('"')):
+        s = s[1:-1]
+    if "data:image/" in s and not s.startswith("data:"):
+        i = s.find("data:image/")
+        s = s[i:]
+    return s
+
+
+def _render_data_url_as_png(data_url: str, caption: str) -> None:
+    """Decode a data URL and render robustly; logs details when V2_DEBUG_IMAGES=1."""
+    try:
+        safe_data_url = _normalize_data_url(data_url)
+        if isinstance(safe_data_url, str) and safe_data_url and not safe_data_url.startswith("data:"):
+            # Let Streamlit handle http(s)/file paths directly
+            st.image(safe_data_url, caption=caption, use_column_width=True)
+            return
+        if not safe_data_url:
+            st.caption(f"⚠️ No image available: {caption}")
+            return
+
+        raw, mime = data_url_to_bytes_and_mime(safe_data_url)
+        if DEBUG_IMAGES:
+            st.caption(f"[dbg] render {caption}: mime={mime}, bytes={len(raw)}")
+        img = Image.open(BytesIO(raw))
+        if img.mode not in ("RGB", "RGBA"):
+            img = img.convert("RGBA" if "A" in img.getbands() else "RGB")
+        # Try with PIL Image object first (most compatible)
+        try:
+            st.image(img, caption=caption, use_column_width=True)
+            return
+        except TypeError as e:
+            if DEBUG_IMAGES:
+                st.caption(f"[dbg] PIL path failed: {type(e).__name__}: {e}")
+        # Fallback to PNG bytes
+        buf = BytesIO()
+        img.save(buf, format="PNG")
+        st.image(buf.getvalue(), caption=caption, use_column_width=True)
+    except Exception as e:
+        if DEBUG_IMAGES:
+            try:
+                st.exception(e)
+            except Exception:
+                st.caption(f"[dbg] Exception: {type(e).__name__}: {e}")
+        # Final fallback attempt with raw input (HTML img)
+        try:
+            safe_data_url = _normalize_data_url(data_url)
+            st.markdown(f'<div><img alt="{caption}" src="{safe_data_url}" style="width:100%;max-width:100%"></div>', unsafe_allow_html=True)
+        except Exception:
+            st.caption(f"⚠️ Unable to display image: {caption}")
+
+
 with st.sidebar:
 
     # Connection status with improved styling
@@ -344,9 +402,9 @@ with st.sidebar:
         if st.session_state.get("video_thumb_data_url") or st.session_state.get("style_thumb_data_url"):
             st.markdown("### 📑 Previews")
         if st.session_state.get("video_thumb_data_url"):
-            st.image(st.session_state["video_thumb_data_url"], caption="Video", use_container_width=True)
+            _render_data_url_as_png(st.session_state["video_thumb_data_url"], "Video")
         if st.session_state.get("style_thumb_data_url"):
-            st.image(st.session_state["style_thumb_data_url"], caption="Style Image", use_container_width=True)
+            _render_data_url_as_png(st.session_state["style_thumb_data_url"], "Style Image")
     except Exception:
         pass
 
@@ -374,6 +432,8 @@ def log_line(msg: str) -> None:
     st.session_state["logs"].append(msg)
     logging.info(msg)
 
+
+ 
 
 def do_analyze(video_bytes: bytes) -> None:
     # Enhanced progress tracking with better visual feedback
@@ -535,7 +595,7 @@ else:
 
         cols = st.columns([1, 1.2, 0.8])
         with cols[0]:
-            gen_disabled = not style_data_url
+            gen_disabled = not style_data_url or client is None
             if gen_disabled:
                 st.warning("⚠️ Please upload a style image first")
 
@@ -571,12 +631,10 @@ else:
                 st.info("Generating image...")
             elif shot.id in st.session_state["results"]:
                 img_url = st.session_state["results"][shot.id]
-                st.image(
-                    img_url,
-                    caption=f"Shot {shot.id}",
-                    use_container_width=True,
-                    output_format="PNG"
-                )
+                if isinstance(img_url, str) and (img_url.startswith("data:image/") or img_url.startswith("http")):
+                    _render_data_url_as_png(img_url, f"Shot {shot.id}")
+                else:
+                    st.error("⚠️ Invalid image returned for this shot.")
             elif shot.id in st.session_state["errors"]:
                 st.error(f"❌ {st.session_state['errors'][shot.id]}")
             else:
@@ -588,6 +646,7 @@ else:
                 try:
                     # Save Original
                     data_bytes, mime = data_url_to_bytes_and_mime(st.session_state["results"][shot.id])
+                    mime = mime or "image/png"
                     st.download_button(
                         label="💾 Save Original (PNG)",
                         data=data_bytes,
