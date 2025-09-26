@@ -105,7 +105,7 @@ def extract_image_data_url_from_response(resp: Union[dict, object]) -> Optional[
                         except Exception:
                             return None
                     if "data:image/" in url:
-                        return _find_data_image_in_obj(url)
+                        return _find_data_or_http_image_in_obj(url)
         # 2) content list items
         if isinstance(content, list):
             candidate = _find_data_or_http_image_in_obj(content)
@@ -170,7 +170,7 @@ def extract_image_data_url_from_response(resp: Union[dict, object]) -> Optional[
                     except Exception:
                         pass
                 if "data:image/" in url:
-                    deep = _find_data_image_in_obj(url)
+                    deep = _find_data_or_http_image_in_obj(url)
                     if deep:
                         return deep
         # 2) content list

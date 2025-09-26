@@ -206,10 +206,13 @@ def _main_content() -> None:
     st.subheader("📝 Context Analysis")
     context_text = st.text_area(
         "AI-Generated Scene Description",
+        value=st.session_state.get("context_text", ""),
         height=180,
-        key="context_text",
+        key="context_textarea",
         help="This is the AI's understanding of your video content",
     )
+    if context_text != st.session_state.get("context_text", ""):
+        st.session_state.context_text = context_text
     with st.expander("Tips to improve context", expanded=False):
         st.markdown("- Be concise but specific about characters, actions, and mood.\n- Include camera angle and lighting cues for better framing.\n- Remove irrelevant details to focus the model.")
     if not context_text:
@@ -335,6 +338,8 @@ def _analyze_video() -> None:
         status.text("🧠 Analyzing scene context…")
         context_text, middle_frame = st.session_state.pipeline.analyze_context(video_bytes)
         st.session_state.context_text = context_text
+        # Keep the text area widget in sync so the new context appears immediately
+        st.session_state["context_textarea"] = context_text
         st.session_state.middle_frame_data_url = middle_frame or middle
         progress.progress(100)
         status.text("✅ Analysis complete!")
@@ -377,12 +382,6 @@ def _generate_shots() -> None:
                 shot_count=st.session_state.shot_count,
             )
         st.session_state.shots = shots
-        # Keep per-shot text areas in sync so newly generated text appears immediately
-        try:
-            for s in shots:
-                st.session_state[f"shot_text_{s.id}"] = s.text
-        except Exception:
-            pass
         st.session_state.results = {}
         st.session_state.errors = {}
         st.session_state.in_progress = {}
@@ -486,5 +485,6 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
 
 
