@@ -4,15 +4,12 @@ from typing import Optional, Dict
 
 from openai import OpenAI
 
-try:
-    import streamlit as st  # Prefer Streamlit secrets on Cloud
-    _SECRETS = st.secrets  # type: ignore[attr-defined]
-except Exception:
-    _SECRETS = {}
+# Local desktop app - no Streamlit dependencies
+_SECRETS = {}
 
 def _get_secret_or_env(key: str, default: str = "") -> str:
-    # Streamlit Cloud populates st.secrets; fall back to environment locally
-    return str(_SECRETS.get(key, os.getenv(key, default)))
+    # Local desktop app - use environment variables only
+    return str(os.getenv(key, default))
 
 
 @dataclass(frozen=True)
