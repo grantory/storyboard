@@ -4,6 +4,16 @@ from typing import Optional, Dict
 
 from openai import OpenAI
 
+try:
+    import streamlit as st  # Prefer Streamlit secrets on Cloud
+    _SECRETS = st.secrets  # type: ignore[attr-defined]
+except Exception:
+    _SECRETS = {}
+
+def _get_secret_or_env(key: str, default: str = "") -> str:
+    # Streamlit Cloud populates st.secrets; fall back to environment locally
+    return str(_SECRETS.get(key, os.getenv(key, default)))
+
 
 @dataclass(frozen=True)
 class V2Config:
@@ -19,19 +29,19 @@ class V2Config:
 
 def load_config() -> V2Config:
     # Accept broader env names and fall back to V2_* where present
-    api_key = os.getenv("OPENROUTER_API_KEY", "")
-    context_model = os.getenv("V2_OPENROUTER_CONTEXT_MODEL") or os.getenv("OPENROUTER_VIDEO_MODEL", "gpt-5-mini")
-    director_model = os.getenv("V2_OPENROUTER_DIRECTOR_MODEL", "openai/gpt-5")
-    image_model = os.getenv("V2_OPENROUTER_IMAGE_MODEL") or os.getenv("OPENROUTER_IMAGE_MODEL", "google/gemini-2.5-flash-image-preview")
-    max_conc = int(os.getenv("V2_MAX_CONCURRENT_REQUESTS") or os.getenv("MAX_CONCURRENT_REQUESTS", "5"))
-    timeout_sec = int(os.getenv("V2_REQUEST_TIMEOUT_SEC") or os.getenv("REQUEST_TIMEOUT_SECONDS", "60"))
+    api_key = _get_secret_or_env("OPENROUTER_API_KEY", "")
+    context_model = _get_secret_or_env("V2_OPENROUTER_CONTEXT_MODEL") or _get_secret_or_env("OPENROUTER_VIDEO_MODEL", "gpt-5-mini")
+    director_model = _get_secret_or_env("V2_OPENROUTER_DIRECTOR_MODEL", "openai/gpt-5")
+    image_model = _get_secret_or_env("V2_OPENROUTER_IMAGE_MODEL") or _get_secret_or_env("OPENROUTER_IMAGE_MODEL", "google/gemini-2.5-flash-image-preview")
+    max_conc = int(_get_secret_or_env("V2_MAX_CONCURRENT_REQUESTS") or _get_secret_or_env("MAX_CONCURRENT_REQUESTS", "5"))
+    timeout_sec = int(_get_secret_or_env("V2_REQUEST_TIMEOUT_SEC") or _get_secret_or_env("REQUEST_TIMEOUT_SECONDS", "60"))
 
     return V2Config(
         openrouter_api_key=api_key,
         context_model=context_model,
-        context_vision_model=os.getenv("V2_OPENROUTER_CONTEXT_VISION_MODEL", "openai/gpt-4o-mini"),
+        context_vision_model=_get_secret_or_env("V2_OPENROUTER_CONTEXT_VISION_MODEL", "openai/gpt-4o-mini"),
         director_model=director_model,
-        director_vision_model=os.getenv("V2_OPENROUTER_DIRECTOR_VISION_MODEL", "openai/gpt-4o-mini"),
+        director_vision_model=_get_secret_or_env("V2_OPENROUTER_DIRECTOR_VISION_MODEL", "openai/gpt-4o-mini"),
         image_model=image_model,
         max_concurrent_requests=max_conc,
         request_timeout_sec=timeout_sec,
@@ -39,11 +49,11 @@ def load_config() -> V2Config:
 
 
 def create_openrouter_client(api_key: Optional[str] = None) -> OpenAI:
-    key = api_key or os.getenv("OPENROUTER_API_KEY", "")
+    key = api_key or _get_secret_or_env("OPENROUTER_API_KEY", "")
     # OpenRouter recommends sending HTTP-Referer and X-Title
     default_headers: Dict[str, str] = {
-        "HTTP-Referer": os.getenv("V2_HTTP_REFERER", "http://localhost"),
-        "X-Title": os.getenv("V2_APP_TITLE", "Project Maestro v2"),
+        "HTTP-Referer": _get_secret_or_env("V2_HTTP_REFERER", "http://localhost"),
+        "X-Title": _get_secret_or_env("V2_APP_TITLE", "Project Maestro v2"),
     }
     client = OpenAI(
         api_key=key,
