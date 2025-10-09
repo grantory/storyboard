@@ -60,3 +60,4 @@ logs/
 # Generated images (optional - uncomment if you want to keep them)
 # output/
 # *.png".env" 
+commit.bat 

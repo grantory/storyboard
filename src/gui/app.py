@@ -704,14 +704,24 @@ class MaestroApp(ctk.CTk):
                         try:
                             from src.services.storage import data_url_to_bytes_and_mime, bytes_to_data_url, save_data_url_png_to_dir
                             from src.services.upscaler import get_upscaler
-                            raw, _ = data_url_to_bytes_and_mime(data_url)
-                            up_bytes = get_upscaler().upscale_from_bytes(raw, outscale=2.0, output_format="PNG")
-                            up_url = bytes_to_data_url(up_bytes, mime="image/png")
-                            # Autosave to output/
+                            
+                            # Setup output directory
                             root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
                             out_dir = os.path.join(root_dir, "output")
-                            saved_path = save_data_url_png_to_dir(up_url, out_dir, prefix=f"storyboard_shot_{sid:03d}")
-                            self.events.put(("auto_upscaled", sid, up_url, up_bytes, saved_path))
+                            
+                            # First, save the original image
+                            raw, _ = data_url_to_bytes_and_mime(data_url)
+                            original_saved_path = save_data_url_png_to_dir(data_url, out_dir, prefix=f"storyboard_shot_{sid:03d}_original")
+                            
+                            # Then try to upscale
+                            try:
+                                up_bytes = get_upscaler().upscale_from_bytes(raw, outscale=2.0, output_format="PNG")
+                                up_url = bytes_to_data_url(up_bytes, mime="image/png")
+                                upscaled_saved_path = save_data_url_png_to_dir(up_url, out_dir, prefix=f"storyboard_shot_{sid:03d}_upscaled")
+                                self.events.put(("auto_upscaled", sid, up_url, up_bytes, upscaled_saved_path, original_saved_path))
+                            except Exception as upscale_error:
+                                # If upscaling fails, still save the original and notify about upscale failure
+                                self.events.put(("upscale_failed_original_saved", sid, data_url, original_saved_path, str(upscale_error)))
                         except Exception as e:  # noqa: BLE001
                             self.events.put(("upscale_error", sid, str(e)))
                     threading.Thread(target=_auto_upscale_worker, args=(shot_id, url), daemon=True).start()
@@ -747,9 +757,9 @@ class MaestroApp(ctk.CTk):
                     self._set_status("✅ Shots ready. Generate images per shot or all.")
                     self.show_toast(f"🎬 {len(shots)} shots generated.", duration_ms=3000)
                 elif kind == "auto_upscaled":
-                    _k, shot_id, up_url, up_bytes, saved_path = evt
+                    _k, shot_id, up_url, up_bytes, upscaled_saved_path, original_saved_path = evt
                     self.app_state.upscaled[shot_id] = up_bytes
-                    self.app_state.saved_paths[shot_id] = saved_path
+                    self.app_state.saved_paths[shot_id] = upscaled_saved_path
                     widgets = self.shot_widgets.get(shot_id)
                     if widgets:
                         prev = widgets.get("preview")
@@ -757,13 +767,45 @@ class MaestroApp(ctk.CTk):
                         btn_save = widgets.get("btn_save")
                         if prev is not None and hasattr(prev, "set_preview"):
                             try:
-                                prev.set_preview(up_url, indicator=status_indicator, on_click_path=saved_path)  # type: ignore[attr-defined]
+                                prev.set_preview(up_url, indicator=status_indicator, on_click_path=upscaled_saved_path)  # type: ignore[attr-defined]
                             except Exception:
                                 pass
                         if btn_save:
                             btn_save.configure(state="normal")
-                    self._on_log(f"💾 Autosaved upscaled shot {shot_id} → {os.path.basename(saved_path)}")
-                    self.show_toast(f"💾 Saved shot {shot_id}")
+                    self._on_log(f"💾 Autosaved original shot {shot_id} → {os.path.basename(original_saved_path)}")
+                    self._on_log(f"💾 Autosaved upscaled shot {shot_id} → {os.path.basename(upscaled_saved_path)}")
+                    self.show_toast(f"💾 Saved shot {shot_id} (original + upscaled)")
+                elif kind == "upscale_failed_original_saved":
+                    _k, shot_id, data_url, original_saved_path, upscale_error = evt
+                    widgets = self.shot_widgets.get(shot_id)
+                    if widgets:
+                        prev = widgets.get("preview")
+                        status_indicator = widgets.get("status_indicator")
+                        btn_save = widgets.get("btn_save")
+                        if prev is not None and hasattr(prev, "set_preview"):
+                            try:
+                                prev.set_preview(data_url, indicator=status_indicator, on_click_path=original_saved_path)  # type: ignore[attr-defined]
+                            except Exception:
+                                pass
+                        if btn_save:
+                            btn_save.configure(state="normal")
+                        if status_indicator:
+                            status_indicator.configure(text="⚠️ Original saved", text_color="#f59e0b")
+                    self._on_log(f"💾 Autosaved original shot {shot_id} → {os.path.basename(original_saved_path)}")
+                    self._on_log(f"⚠️ Upscaling failed for shot {shot_id}: {upscale_error}")
+                    self.show_toast(f"⚠️ Shot {shot_id} saved (original only - upscaling failed)")
+                elif kind == "upscale_error":
+                    _k, shot_id, error_msg = evt
+                    self._on_log(f"❌ Complete failure for shot {shot_id}: {error_msg}")
+                    widgets = self.shot_widgets.get(shot_id)
+                    if widgets:
+                        status_indicator = widgets.get("status_indicator")
+                        btn_save = widgets.get("btn_save")
+                        if status_indicator:
+                            status_indicator.configure(text="❌ Failed", text_color="#ef4444")
+                        if btn_save:
+                            btn_save.configure(state="normal", text="🔄 Retry")
+                    self.show_toast(f"❌ Shot {shot_id} failed completely. Check log for details.")
         except queue.Empty:
             pass
         self.after(50, self._drain_events)
@@ -1081,7 +1123,7 @@ class MaestroApp(ctk.CTk):
         ext = ".png"
 
         self._on_log(f"📁 Opening save dialog for shot {shot_id}...")
-        path = asksaveasfilename(defaultextension=ext, initialfile=f"storyboard_shot_{shot_id:03d}{ext}")
+        path = asksaveasfilename(defaultextension=ext, initialfile=f"storyboard_shot_{shot_id:03d}_upscaled{ext}")
         if not path:
             self._on_log(f"❌ Save operation cancelled for shot {shot_id}")
             return
