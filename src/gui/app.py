@@ -25,6 +25,19 @@ class MaestroApp(ctk.CTk):
         self.pipeline = Pipeline(self.app_state.cfg, on_log=self._on_log)
         self.events: "queue.Queue[tuple]" = queue.Queue()
 
+        # Ensure output directory exists for all users (independent of upscaler/generation flow)
+        try:
+            root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+            out_dir = os.path.join(root_dir, "output")
+            os.makedirs(out_dir, exist_ok=True)
+            try:
+                self._on_log(f"📁 Output directory ready: {out_dir}")
+            except Exception:
+                pass
+        except Exception:
+            # Non-fatal; later saves attempt to create the directory as well
+            pass
+
         self._build_ui()
         self._setup_keyboard_shortcuts()
         self.after(50, self._drain_events)
