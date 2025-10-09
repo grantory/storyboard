@@ -7,6 +7,10 @@ echo   Project Maestro v2 - AI Storyboard
 echo ========================================
 echo.
 
+REM Ensure we are running from this script's directory
+set "SCRIPT_DIR=%~dp0"
+cd /d "%SCRIPT_DIR%"
+
 REM Check if Python is installed
 python --version >nul 2>&1
 if errorlevel 1 (
@@ -27,7 +31,24 @@ if errorlevel 1 (
 )
 
 REM Set environment variable for Real-ESRGAN weights
-set REAL_ESRGAN_WEIGHTS_DIR=%~dp0weights
+set "REAL_ESRGAN_WEIGHTS_DIR=%SCRIPT_DIR%weights"
+echo [INFO] REAL_ESRGAN_WEIGHTS_DIR=%REAL_ESRGAN_WEIGHTS_DIR%
+
+REM Ensure output directory exists and is writable
+set "OUTPUT_DIR=%SCRIPT_DIR%output"
+if not exist "%OUTPUT_DIR%" (
+    mkdir "%OUTPUT_DIR%" 2>nul
+)
+if errorlevel 1 (
+    echo [ERROR] Cannot create output directory: %OUTPUT_DIR%
+    echo         Move this project to a writable location (e.g. Documents or Desktop)
+    echo         and avoid protected folders like Program Files.
+    echo.
+    pause
+    exit /b 1
+) else (
+    echo [OK] Output directory ready: %OUTPUT_DIR%
+)
 
 REM Check if .env file exists and has API key
 if not exist ".env" (
