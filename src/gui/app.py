@@ -703,24 +703,24 @@ class MaestroApp(ctk.CTk):
                     def _auto_upscale_worker(sid: int, data_url: str) -> None:
                         try:
                             from src.services.storage import data_url_to_bytes_and_mime, bytes_to_data_url, save_data_url_png_to_dir
-                            from src.services.upscaler import get_upscaler
-                            
+
                             # Setup output directory
                             root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
                             out_dir = os.path.join(root_dir, "output")
-                            
-                            # First, save the original image
+
+                            # First, save the original image (and ensure output dir exists)
                             raw, _ = data_url_to_bytes_and_mime(data_url)
                             original_saved_path = save_data_url_png_to_dir(data_url, out_dir, prefix=f"storyboard_shot_{sid:03d}_original")
-                            
-                            # Then try to upscale
+
+                            # Then try to upscale (import upscaler lazily so original is always saved)
                             try:
+                                from src.services.upscaler import get_upscaler
                                 up_bytes = get_upscaler().upscale_from_bytes(raw, outscale=2.0, output_format="PNG")
                                 up_url = bytes_to_data_url(up_bytes, mime="image/png")
                                 upscaled_saved_path = save_data_url_png_to_dir(up_url, out_dir, prefix=f"storyboard_shot_{sid:03d}_upscaled")
                                 self.events.put(("auto_upscaled", sid, up_url, up_bytes, upscaled_saved_path, original_saved_path))
                             except Exception as upscale_error:
-                                # If upscaling fails, still save the original and notify about upscale failure
+                                # If upscaling fails for any reason, report that original was saved
                                 self.events.put(("upscale_failed_original_saved", sid, data_url, original_saved_path, str(upscale_error)))
                         except Exception as e:  # noqa: BLE001
                             self.events.put(("upscale_error", sid, str(e)))
