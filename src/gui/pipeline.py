@@ -166,9 +166,20 @@ class Pipeline:
 
     def generate_shots_from_context(self, middle_frame_data_url: str, context_text: str, cancel: Optional[Event] = None, *, shot_count: int = 5) -> List[Shot]:
         """Generate shots using user-edited context and a middle frame."""
-        self.on_log("🎬 Generating shots from edited context...")
+        self.on_log("🎬 Generating shots from edited context (middle frame)...")
         try:
-            shots = fetch_director_shots(self.client, self.cfg, middle_frame_data_url, context_text, on_log=self.on_log, shot_count=shot_count)
+            shots = fetch_director_shots(self.client, self.cfg, middle_frame_data_url, context_text, on_log=self.on_log, shot_count=shot_count, image_type="middle_frame")
+            self.on_log(f"✅ Director analysis complete ({len(shots)} shots generated)")
+            return shots
+        except Exception as e:
+            self.on_log(f"❌ Director analysis failed: {e}")
+            raise
+
+    def generate_shots_from_style_image(self, style_image_data_url: str, context_text: str, cancel: Optional[Event] = None, *, shot_count: int = 5) -> List[Shot]:
+        """Generate shots using user-provided context and a style image (no video)."""
+        self.on_log("🎬 Generating shots from style image + user context...")
+        try:
+            shots = fetch_director_shots(self.client, self.cfg, style_image_data_url, context_text, on_log=self.on_log, shot_count=shot_count, image_type="style_image")
             self.on_log(f"✅ Director analysis complete ({len(shots)} shots generated)")
             return shots
         except Exception as e:
@@ -186,15 +197,19 @@ class Pipeline:
             self.on_log(f"❌ Image generation failed: {e}")
             raise
 
-    def retry_single_shot(self, middle_frame_data_url: str, context_text: str, shot_id: int, previous_shots: List[str] = None) -> Shot:
-        """Retry generation of a single shot with previous attempts as context."""
+    def retry_single_shot(self, reference_image_data_url: str, context_text: str, shot_id: int, previous_shots: List[str] = None, *, image_type: str = "middle_frame") -> Shot:
+        """Retry generation of a single shot with previous attempts as context.
+
+        reference_image_data_url: middle frame or style image
+        image_type: "middle_frame" | "style_image"
+        """
         prev_count = len(previous_shots) if previous_shots else 0
         self.on_log(f"🔄 Retrying shot {shot_id} with {prev_count} previous attempts as context")
         try:
             from src.services.director import fetch_single_director_shot
             shot = fetch_single_director_shot(
-                self.client, self.cfg, middle_frame_data_url, context_text, 
-                shot_id, previous_shots, on_log=self.on_log
+                self.client, self.cfg, reference_image_data_url, context_text,
+                shot_id, previous_shots, on_log=self.on_log, image_type=image_type
             )
             self.on_log(f"✅ Shot {shot_id} retry complete")
             return shot

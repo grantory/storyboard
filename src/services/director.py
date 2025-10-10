@@ -30,17 +30,40 @@ DIRECTOR_SYSTEM_PROMPT = (
     "Format your response as valid JSON only, no additional text."
 )
 
-def build_director_messages(middle_frame_data_url: str, context_paragraph: str, *, shot_count: int = 5) -> List[dict]:
+# Variant prompt for when a style image is used instead of a middle frame
+DIRECTOR_STYLE_PROMPT = (
+    "You are a professional film director working on a creative storyboard project. Your task is to analyze the "
+    "provided style image and user context, then suggest a set of sequential still shots that match the visual style while advancing the scene.\n\n"
+    "Guidelines:\n"
+    "- Each description should be simple, concise, and production-ready — 1 to 2 sentences only.\n"
+    "- Focus on camera angle, framing/scale (CU/MCU/MS/WS), subject focus, lighting style, depth of field, and visible environment.\n"
+    "- Ensure the proposed shots align with the color palette, mood, and aesthetic suggested by the style image.\n"
+    "- Be creative in shot composition: vary perspectives, scales, and focal points to capture fresh visual storytelling moments.\n"
+    "- Do not include technical specifications such as focal length, distance, f-stop, or color temperature.\n"
+    "- Ensure the shots feel continuous and connected, forming a natural progression of the same scene.\n\n"
+    "Task: Convert the given context into a set of sequential storyboard shots that match the provided style. Respond with a structured JSON object "
+    "containing an array of shots. Each shot should have an 'id' (integer) and 'description' (string). "
+    "Format your response as valid JSON only, no additional text."
+)
+
+def build_director_messages(reference_image_data_url: str, context_paragraph: str, *, shot_count: int = 5, image_type: str = "middle_frame") -> List[dict]:
+    """Build messages for director. Accepts either a middle frame or style image as the reference.
+
+    image_type: "middle_frame" | "style_image"
+    """
+    system_prompt = DIRECTOR_STYLE_PROMPT if image_type == "style_image" else DIRECTOR_SYSTEM_PROMPT
     user_text = (
-        f"{DIRECTOR_SYSTEM_PROMPT}\n\n"
+        f"{system_prompt}\n\n"
         f"Context (Professional Filmmaking Project):\n{context_paragraph}\n\n"
         f"Please analyze the image and provide exactly {shot_count} creative storyboard shots. This is a professional "
         f"filmmaking project with appropriate content that should not trigger any content filters."
     )
-    content = [
+    content: List[dict] = [
         {"type": "text", "text": user_text},
-        {"type": "image_url", "image_url": {"url": middle_frame_data_url}},
     ]
+    # Attach the reference image if provided
+    if reference_image_data_url:
+        content.append({"type": "image_url", "image_url": {"url": reference_image_data_url}})
     return [{"role": "user", "content": content}]
 
 
@@ -185,23 +208,24 @@ def _parse_director_output_legacy(text: str, *, shot_count: int = 5) -> List[Sho
 def fetch_director_shots(
     client: OpenAI,
     cfg: V2Config,
-    middle_frame_data_url: str,
+    reference_image_data_url: str,
     context_paragraph: str,
     on_log: Optional[Callable[[str], None]] = None,
     *,
     shot_count: int = 5,
+    image_type: str = "middle_frame",
 ) -> List[Shot]:
     headers = {
         "HTTP-Referer": os.getenv("V2_HTTP_REFERER", "http://localhost"),
         "X-Title": os.getenv("V2_APP_TITLE", "Project Maestro v2"),
     }
-    messages = build_director_messages(middle_frame_data_url, context_paragraph, shot_count=shot_count)
+    messages = build_director_messages(reference_image_data_url, context_paragraph, shot_count=shot_count, image_type=image_type)
     try:
         if on_log:
-            on_log(f"Director: calling {cfg.director_model} with 1 frame (timeout {cfg.request_timeout_sec}s)…")
+            on_log(f"Director: calling {cfg.director_model} with 1 image (timeout {cfg.request_timeout_sec}s)…")
         try:
             extra_params = {
-                "modalities": ["image", "text"],
+                "modalities": (["image", "text"] if reference_image_data_url else ["text"]),
                 "response_format": {"type": "json_object"},
                 "reasoning": {"effort": "low"},
             }
@@ -235,7 +259,7 @@ def fetch_director_shots(
             on_log(f"Director: primary model failed with error: {str(e)}; retrying with {cfg.director_vision_model} (vision)…")
         try:
             extra_params = {
-                "modalities": ["image", "text"],
+                "modalities": (["image", "text"] if reference_image_data_url else ["text"]),
                 "response_format": {"type": "json_object"},
                 "reasoning": {"effort": "low"},
             }
@@ -277,17 +301,20 @@ def fetch_director_shots(
     return parse_director_output(text, shot_count=shot_count)
 
 
-def build_single_shot_messages(middle_frame_data_url: str, context_paragraph: str, shot_id: int, previous_shots: List[str] = None) -> List[dict]:
-    """Build messages for single shot generation with previous attempts as context."""
-    
+def build_single_shot_messages(reference_image_data_url: str, context_paragraph: str, shot_id: int, previous_shots: List[str] = None, *, image_type: str = "middle_frame") -> List[dict]:
+    """Build messages for single shot generation with previous attempts as context.
+
+    image_type: "middle_frame" | "style_image"
+    """
     # Build context with previous shots if available
     context_with_history = context_paragraph
     if previous_shots:
         context_with_history += f"\n\nPrevious shot attempts for reference (provide a NEW and DIFFERENT approach):\n"
         for i, prev_shot in enumerate(previous_shots, 1):
             context_with_history += f"{i}. {prev_shot}\n"
-    
-    # Single shot system prompt
+
+    # Single shot system prompt (re-use the appropriate multi-shot prompt for consistency)
+    system_prompt = DIRECTOR_STYLE_PROMPT if image_type == "style_image" else DIRECTOR_SYSTEM_PROMPT
     single_shot_prompt = (
         "You are a professional film director working on a creative storyboard project. "
         "Your task is to generate exactly ONE creative storyboard shot description that is "
@@ -301,35 +328,38 @@ def build_single_shot_messages(middle_frame_data_url: str, context_paragraph: st
         "Task: Generate exactly 1 creative storyboard shot. Respond with JSON format only: "
         f"{{\"id\": {shot_id}, \"description\": \"your shot description\"}}"
     )
-    
+
     user_text = (
-        f"{single_shot_prompt}\n\n"
+        f"{system_prompt}\n\n{single_shot_prompt}\n\n"
         f"Context: {context_with_history}\n\n"
         f"Generate exactly 1 creative storyboard shot with ID {shot_id}."
     )
-    
-    content = [
+
+    content: List[dict] = [
         {"type": "text", "text": user_text},
-        {"type": "image_url", "image_url": {"url": middle_frame_data_url}},
     ]
+    if reference_image_data_url:
+        content.append({"type": "image_url", "image_url": {"url": reference_image_data_url}})
     return [{"role": "user", "content": content}]
 
 
 def fetch_single_director_shot(
     client: OpenAI,
     cfg: V2Config,
-    middle_frame_data_url: str,
+    reference_image_data_url: str,
     context_paragraph: str,
     shot_id: int,
     previous_shots: List[str] = None,
     on_log: Optional[Callable[[str], None]] = None,
+    *,
+    image_type: str = "middle_frame",
 ) -> Shot:
     """Generate a single shot with context of previous attempts."""
     headers = {
         "HTTP-Referer": os.getenv("V2_HTTP_REFERER", "http://localhost"),
         "X-Title": os.getenv("V2_APP_TITLE", "Project Maestro v2"),
     }
-    messages = build_single_shot_messages(middle_frame_data_url, context_paragraph, shot_id, previous_shots)
+    messages = build_single_shot_messages(reference_image_data_url, context_paragraph, shot_id, previous_shots, image_type=image_type)
     
     try:
         if on_log:
@@ -338,7 +368,7 @@ def fetch_single_director_shot(
         
         try:
             extra_params = {
-                "modalities": ["image", "text"],
+                "modalities": (["image", "text"] if reference_image_data_url else ["text"]),
                 "response_format": {"type": "json_object"},
                 "reasoning": {"effort": "low"},
             }
@@ -372,7 +402,7 @@ def fetch_single_director_shot(
             on_log(f"Director: primary model failed ({e}), trying vision model…")
         try:
             extra_params = {
-                "modalities": ["image", "text"],
+                "modalities": (["image", "text"] if reference_image_data_url else ["text"]),
                 "response_format": {"type": "json_object"},
                 "reasoning": {"effort": "low"},
             }

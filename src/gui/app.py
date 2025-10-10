@@ -300,6 +300,7 @@ class MaestroApp(ctk.CTk):
 
         self._build_context_section()
         self._build_shots_section()
+        self._build_thumbnails_section()
 
     def _build_context_section(self) -> None:
         """Build the context input section."""
@@ -346,6 +347,96 @@ class MaestroApp(ctk.CTk):
             label_fg_color="transparent"
         )
         self.shots_frame.pack(fill="both", expand=True)
+
+    def _build_thumbnails_section(self) -> None:
+        """Build the horizontal thumbnail strip at the bottom."""
+        thumbs_section = ctk.CTkFrame(self.main, fg_color="transparent")
+        thumbs_section.pack(fill="x", padx=20, pady=(0, 16))
+
+        header = ctk.CTkFrame(thumbs_section, fg_color="transparent")
+        header.pack(fill="x", pady=(0, 6))
+
+        lbl = ctk.CTkLabel(
+            header,
+            text="🗂️ Storyboard Thumbnails",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            text_color=("gray60", "gray40"),
+        )
+        lbl.pack(anchor="w")
+
+        # Container that lays out thumbnails horizontally
+        self.thumb_container = ctk.CTkFrame(
+            thumbs_section,
+            fg_color=("gray92", "gray18"),
+            height=120,
+        )
+        self.thumb_container.pack(fill="x")
+        self.thumb_container.grid_propagate(False)
+
+        # Keep small refs to images to avoid GC
+        self._thumb_image_refs: dict[int, object] = {}
+
+    def _refresh_thumbnails(self) -> None:
+        """Rebuild thumbnail tiles from current shots/results.
+
+        Uses upscaled image if available, otherwise generated preview; otherwise placeholder.
+        """
+        try:
+            for child in self.thumb_container.winfo_children():
+                child.destroy()
+
+            # Horizontal layout
+            row = ctk.CTkFrame(self.thumb_container, fg_color="transparent")
+            row.pack(fill="x", padx=6, pady=6)
+
+            # Build tiles in shot order
+            for shot in self.app_state.shots:
+                tile = ctk.CTkFrame(row, fg_color=("gray88", "gray22"))
+                tile.pack(side="left", padx=4, pady=2)
+
+                # Image label
+                img_label = ctk.CTkLabel(tile, text=f"#{shot.id}", width=100, height=68, corner_radius=4,
+                                         fg_color=("gray85", "gray25"),
+                                         text_color=("gray50", "gray60"))
+                img_label.pack(padx=6, pady=6)
+
+                # Determine best image for thumbnail
+                data_url: str | None = None
+                if shot.id in self.app_state.upscaled:
+                    try:
+                        from src.services.storage import bytes_to_data_url
+                        data_url = bytes_to_data_url(self.app_state.upscaled[shot.id], mime="image/png")
+                    except Exception:
+                        data_url = None
+                if not data_url:
+                    data_url = self.app_state.results.get(shot.id)
+
+                if data_url:
+                    try:
+                        cimg = data_url_to_ctkimage(data_url, max_width=100)
+                        img_label.configure(image=cimg, text="")
+                        img_label._image_ref = cimg  # type: ignore[attr-defined]
+                        self._thumb_image_refs[shot.id] = cimg
+                    except Exception:
+                        pass
+
+                # Click opens saved image path if available
+                saved_path = self.app_state.saved_paths.get(shot.id)
+                def _on_thumb_click(_e=None, path=saved_path):
+                    if path:
+                        try:
+                            import subprocess, os, sys
+                            if sys.platform.startswith("win"):
+                                os.startfile(path)  # type: ignore[attr-defined]
+                            elif sys.platform == "darwin":
+                                subprocess.run(["open", path], check=False)
+                            else:
+                                subprocess.run(["xdg-open", path], check=False)
+                        except Exception:
+                            pass
+                img_label.bind("<Button-1>", _on_thumb_click)
+        except Exception:
+            pass
 
     def _build_right_sidebar(self) -> None:
         """Build the right sidebar with logs."""
@@ -456,6 +547,11 @@ class MaestroApp(ctk.CTk):
             txt = self.txt_context.get("1.0", "end").strip()
             words = len([w for w in txt.split() if w])
             self.lbl_wc.configure(text=f"{words} words")
+            # Refresh action buttons so style-only flow enables Generate as user types
+            try:
+                self._refresh_action_buttons_state()
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -513,8 +609,16 @@ class MaestroApp(ctk.CTk):
             can_analyze = has_video and has_style
             self.btn_analyze.configure(state="normal" if can_analyze else "disabled")
 
-            analyzed = bool(self.app_state.context_text and self.app_state.middle_frame_data_url)
-            self.btn_gen_all.configure(state="normal" if analyzed else "disabled")
+            # Determine if user has provided any context (from textbox)
+            try:
+                ctx_txt = self.txt_context.get("1.0", "end").strip()
+            except Exception:
+                ctx_txt = self.app_state.context_text or ""
+
+            # Allow Generate when either: (a) context+middle frame ready OR (b) style image + non-empty context text
+            analyzed_video_path = bool(self.app_state.context_text and self.app_state.middle_frame_data_url)
+            analyzed_style_path = bool(has_style and ctx_txt)
+            self.btn_gen_all.configure(state="normal" if (analyzed_video_path or analyzed_style_path) else "disabled")
         except Exception:
             pass
 
@@ -743,6 +847,10 @@ class MaestroApp(ctk.CTk):
                         btn_gen.configure(state="normal", text="🎨 Generate Image")
                     self._on_log(f"Shot {shot_id} generated")
                     self.show_toast(f"🎬 Shot {shot_id} complete!", duration_ms=2000)
+                    try:
+                        self._refresh_thumbnails()
+                    except Exception:
+                        pass
                 elif kind == "gen_error":
                     _k, shot_id, msg = evt
                     self._on_log(f"Shot {shot_id} failed: {msg}")
@@ -769,6 +877,10 @@ class MaestroApp(ctk.CTk):
                     self.btn_analyze.configure(state="normal")
                     self._set_status("✅ Shots ready. Generate images per shot or all.")
                     self.show_toast(f"🎬 {len(shots)} shots generated.", duration_ms=3000)
+                    try:
+                        self._refresh_thumbnails()
+                    except Exception:
+                        pass
                 elif kind == "shot_retry_done":
                     _k, shot_id, new_shot = evt
                     
@@ -812,6 +924,10 @@ class MaestroApp(ctk.CTk):
                     else:
                         self.show_toast(f"🎬 Shot {shot_id} updated with fresh perspective!", duration_ms=2000)
                         self._on_log(f"💡 Tip: Shot {shot_id} retry complete. You can retry again for more variations!")
+                    try:
+                        self._refresh_thumbnails()
+                    except Exception:
+                        pass
                 elif kind == "shot_retry_error":
                     _k, shot_id, error_msg = evt
                     widgets = self.shot_widgets.get(shot_id)
@@ -843,6 +959,10 @@ class MaestroApp(ctk.CTk):
                     self._on_log(f"💾 Autosaved original shot {shot_id} → {os.path.basename(original_saved_path)}")
                     self._on_log(f"💾 Autosaved upscaled shot {shot_id} → {os.path.basename(upscaled_saved_path)}")
                     self.show_toast(f"💾 Saved shot {shot_id} (original + upscaled)")
+                    try:
+                        self._refresh_thumbnails()
+                    except Exception:
+                        pass
                 elif kind == "upscale_failed_original_saved":
                     _k, shot_id, data_url, original_saved_path, upscale_error = evt
                     widgets = self.shot_widgets.get(shot_id)
@@ -862,6 +982,10 @@ class MaestroApp(ctk.CTk):
                     self._on_log(f"💾 Autosaved original shot {shot_id} → {os.path.basename(original_saved_path)}")
                     self._on_log(f"⚠️ Upscaling failed for shot {shot_id}: {upscale_error}")
                     self.show_toast(f"⚠️ Shot {shot_id} saved (original only - upscaling failed)")
+                    try:
+                        self._refresh_thumbnails()
+                    except Exception:
+                        pass
                 elif kind == "upscale_error":
                     _k, shot_id, error_msg = evt
                     self._on_log(f"❌ Complete failure for shot {shot_id}: {error_msg}")
@@ -874,6 +998,10 @@ class MaestroApp(ctk.CTk):
                         if btn_save:
                             btn_save.configure(state="normal", text="🔄 Retry")
                     self.show_toast(f"❌ Shot {shot_id} failed completely. Check log for details.")
+                    try:
+                        self._refresh_thumbnails()
+                    except Exception:
+                        pass
         except queue.Empty:
             pass
         self.after(50, self._drain_events)
@@ -888,6 +1016,10 @@ class MaestroApp(ctk.CTk):
         for shot in self.app_state.shots:
             shot_widgets = self._create_shot_widget(shot)
             self.shot_widgets[shot.id] = shot_widgets
+        try:
+            self._refresh_thumbnails()
+        except Exception:
+            pass
 
     def _create_shot_widget(self, shot) -> dict[str, ctk.CTkBaseClass]:
         """Create a single shot widget and return its components."""
@@ -925,7 +1057,7 @@ class MaestroApp(ctk.CTk):
 
         txt = ctk.CTkTextbox(
             left_section,
-            height=160,
+            height=110,
             width=360,
             font=ctk.CTkFont(size=12)
         )
@@ -1149,9 +1281,12 @@ class MaestroApp(ctk.CTk):
         """Retry generation of a single shot description with helpful UX."""
         self._on_log(f"🔄 Retrying shot {shot_id}")
         
-        if not self.app_state.middle_frame_data_url:
-            self._on_log("❌ No middle frame available for retry")
-            self.show_toast("No middle frame available. Run Analyze first.", duration_ms=3000)
+        # We support retry using either middle frame (video) or style image when no video
+        has_middle = bool(self.app_state.middle_frame_data_url)
+        has_style = bool(self.app_state.style_data_url)
+        if not (has_middle or has_style):
+            self._on_log("❌ No reference image available for retry")
+            self.show_toast("Upload a video or style image first.", duration_ms=3000)
             return
         
         # Get current context
@@ -1188,12 +1323,22 @@ class MaestroApp(ctk.CTk):
         
         def worker() -> None:
             try:
-                new_shot = self.pipeline.retry_single_shot(
-                    self.app_state.middle_frame_data_url or "",
-                    ctx,
-                    shot_id,
-                    previous_shots
-                )
+                if has_middle:
+                    new_shot = self.pipeline.retry_single_shot(
+                        self.app_state.middle_frame_data_url or "",
+                        ctx,
+                        shot_id,
+                        previous_shots,
+                        image_type="middle_frame",
+                    )
+                else:
+                    new_shot = self.pipeline.retry_single_shot(
+                        self.app_state.style_data_url or "",
+                        ctx,
+                        shot_id,
+                        previous_shots,
+                        image_type="style_image",
+                    )
                 self.events.put(("shot_retry_done", shot_id, new_shot))
             except Exception as e:
                 self.events.put(("shot_retry_error", shot_id, str(e)))
@@ -1202,9 +1347,18 @@ class MaestroApp(ctk.CTk):
 
     def _generate_shots_from_context(self) -> None:
         self._on_log("🎭 Generating shots from context")
-        if not self.app_state.middle_frame_data_url:
-            self._on_log("❌ No middle frame available - run Analyze first")
-            self.show_toast("Run Analyze first to get context.", duration_ms=3000)
+        # Choose reference: prefer middle frame; fallback to style image
+        reference_image = None
+        image_type = None
+        if self.app_state.middle_frame_data_url:
+            reference_image = self.app_state.middle_frame_data_url
+            image_type = "middle_frame"
+        elif self.app_state.style_data_url:
+            reference_image = self.app_state.style_data_url
+            image_type = "style_image"
+        else:
+            self._on_log("❌ No reference image available - upload video or style image first")
+            self.show_toast("Upload a video or style image first.", duration_ms=3000)
             return
         # Read latest edited context
         ctx = self.txt_context.get("1.0", "end").strip()
@@ -1222,12 +1376,20 @@ class MaestroApp(ctk.CTk):
         def worker() -> None:
             self._on_log("🧵 Director worker thread started")
             try:
-                shots = self.pipeline.generate_shots_from_context(
-                    self.app_state.middle_frame_data_url or "",
-                    ctx,
-                    cancel=self.app_state.cancel_event,
-                    shot_count=self.app_state.shot_count,
-                )
+                if image_type == "middle_frame":
+                    shots = self.pipeline.generate_shots_from_context(
+                        reference_image or "",
+                        ctx,
+                        cancel=self.app_state.cancel_event,
+                        shot_count=self.app_state.shot_count,
+                    )
+                else:
+                    shots = self.pipeline.generate_shots_from_style_image(
+                        reference_image or "",
+                        ctx,
+                        cancel=self.app_state.cancel_event,
+                        shot_count=self.app_state.shot_count,
+                    )
                 self.events.put(("shots_done", shots))
             except Exception as e:  # noqa: BLE001
                 self.events.put(("error", f"Generate shots failed: {e}"))
