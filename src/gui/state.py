@@ -31,6 +31,9 @@ class AppState:
 
     logs: List[str] = field(default_factory=list)
 
+    # Shot retry history: shot_id -> list of previous descriptions
+    shot_history: Dict[int, List[str]] = field(default_factory=dict)
+
     cfg: Optional[V2Config] = None
     cancel_event: Event = field(default_factory=Event)
 

@@ -277,3 +277,149 @@ def fetch_director_shots(
     return parse_director_output(text, shot_count=shot_count)
 
 
+def build_single_shot_messages(middle_frame_data_url: str, context_paragraph: str, shot_id: int, previous_shots: List[str] = None) -> List[dict]:
+    """Build messages for single shot generation with previous attempts as context."""
+    
+    # Build context with previous shots if available
+    context_with_history = context_paragraph
+    if previous_shots:
+        context_with_history += f"\n\nPrevious shot attempts for reference (provide a NEW and DIFFERENT approach):\n"
+        for i, prev_shot in enumerate(previous_shots, 1):
+            context_with_history += f"{i}. {prev_shot}\n"
+    
+    # Single shot system prompt
+    single_shot_prompt = (
+        "You are a professional film director working on a creative storyboard project. "
+        "Your task is to generate exactly ONE creative storyboard shot description that is "
+        "distinctly different from any previous attempts.\n\n"
+        "Guidelines:\n"
+        "- Provide a fresh, new perspective on the scene\n"
+        "- Focus on camera angle, framing/scale (CU/MCU/MS/WS), subject focus, lighting style, depth of field\n"
+        "- Be creative and avoid repeating previous approaches\n"
+        "- Keep description concise: 1 to 2 sentences only\n"
+        "- Ensure the shot feels continuous with the scene but offers a new visual perspective\n\n"
+        "Task: Generate exactly 1 creative storyboard shot. Respond with JSON format only: "
+        f"{{\"id\": {shot_id}, \"description\": \"your shot description\"}}"
+    )
+    
+    user_text = (
+        f"{single_shot_prompt}\n\n"
+        f"Context: {context_with_history}\n\n"
+        f"Generate exactly 1 creative storyboard shot with ID {shot_id}."
+    )
+    
+    content = [
+        {"type": "text", "text": user_text},
+        {"type": "image_url", "image_url": {"url": middle_frame_data_url}},
+    ]
+    return [{"role": "user", "content": content}]
+
+
+def fetch_single_director_shot(
+    client: OpenAI,
+    cfg: V2Config,
+    middle_frame_data_url: str,
+    context_paragraph: str,
+    shot_id: int,
+    previous_shots: List[str] = None,
+    on_log: Optional[Callable[[str], None]] = None,
+) -> Shot:
+    """Generate a single shot with context of previous attempts."""
+    headers = {
+        "HTTP-Referer": os.getenv("V2_HTTP_REFERER", "http://localhost"),
+        "X-Title": os.getenv("V2_APP_TITLE", "Project Maestro v2"),
+    }
+    messages = build_single_shot_messages(middle_frame_data_url, context_paragraph, shot_id, previous_shots)
+    
+    try:
+        if on_log:
+            prev_count = len(previous_shots) if previous_shots else 0
+            on_log(f"Director: retrying shot {shot_id} with {prev_count} previous attempts as context (timeout {cfg.request_timeout_sec}s)…")
+        
+        try:
+            extra_params = {
+                "modalities": ["image", "text"],
+                "response_format": {"type": "json_object"},
+                "reasoning": {"effort": "low"},
+            }
+            resp = with_backoff(
+                lambda: client.chat.completions.create(
+                    model=cfg.director_model,
+                    messages=messages,
+                    extra_headers=headers,
+                    extra_body=extra_params,
+                    timeout=cfg.request_timeout_sec,
+                ),
+                on_log=on_log,
+            )
+        except Exception:
+            if on_log:
+                on_log("Director: OpenAI client failed; falling back to HTTP requests…")
+            resp = with_backoff(
+                lambda: chat_completions(
+                    api_key=cfg.openrouter_api_key,
+                    model=cfg.director_model,
+                    messages=messages,
+                    timeout_sec=cfg.request_timeout_sec,
+                    extra_body=extra_params,
+                    extra_headers=headers,
+                ),
+                on_log=on_log,
+            )
+    except Exception as e:
+        # Fallback to a vision-capable model if the default model rejects images
+        if on_log:
+            on_log(f"Director: primary model failed ({e}), trying vision model…")
+        try:
+            extra_params = {
+                "modalities": ["image", "text"],
+                "response_format": {"type": "json_object"},
+                "reasoning": {"effort": "low"},
+            }
+            resp = with_backoff(
+                lambda: client.chat.completions.create(
+                    model=cfg.director_vision_model,
+                    messages=messages,
+                    extra_headers=headers,
+                    extra_body=extra_params,
+                    timeout=cfg.request_timeout_sec,
+                ),
+                on_log=on_log,
+            )
+        except Exception:
+            if on_log:
+                on_log("Director: OpenAI client failed; falling back to HTTP requests (vision)…")
+            resp = with_backoff(
+                lambda: chat_completions(
+                    api_key=cfg.openrouter_api_key,
+                    model=cfg.director_vision_model,
+                    messages=messages,
+                    timeout_sec=cfg.request_timeout_sec,
+                    extra_body=extra_params,
+                    extra_headers=headers,
+                ),
+                on_log=on_log,
+            )
+    
+    text = ""
+    if resp is not None:
+        if hasattr(resp, "choices"):
+            text = (resp.choices[0].message.content or "") if resp.choices else ""
+        elif isinstance(resp, dict):
+            choices = resp.get("choices", [])
+            if choices:
+                msg = choices[0].get("message", {})
+                text = msg.get("content", "") or ""
+    
+    if on_log:
+        on_log(f"Director: received {len(text)} characters for shot {shot_id}")
+    
+    # Parse single shot result
+    shots = parse_director_output(text, shot_count=1)
+    if shots:
+        return shots[0]
+    else:
+        # Fallback: return empty shot with correct ID
+        return Shot(id=shot_id, text="")
+
+

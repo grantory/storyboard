@@ -186,4 +186,20 @@ class Pipeline:
             self.on_log(f"❌ Image generation failed: {e}")
             raise
 
+    def retry_single_shot(self, middle_frame_data_url: str, context_text: str, shot_id: int, previous_shots: List[str] = None) -> Shot:
+        """Retry generation of a single shot with previous attempts as context."""
+        prev_count = len(previous_shots) if previous_shots else 0
+        self.on_log(f"🔄 Retrying shot {shot_id} with {prev_count} previous attempts as context")
+        try:
+            from src.services.director import fetch_single_director_shot
+            shot = fetch_single_director_shot(
+                self.client, self.cfg, middle_frame_data_url, context_text, 
+                shot_id, previous_shots, on_log=self.on_log
+            )
+            self.on_log(f"✅ Shot {shot_id} retry complete")
+            return shot
+        except Exception as e:
+            self.on_log(f"❌ Shot {shot_id} retry failed: {e}")
+            raise
+
 

@@ -769,6 +769,61 @@ class MaestroApp(ctk.CTk):
                     self.btn_analyze.configure(state="normal")
                     self._set_status("✅ Shots ready. Generate images per shot or all.")
                     self.show_toast(f"🎬 {len(shots)} shots generated.", duration_ms=3000)
+                elif kind == "shot_retry_done":
+                    _k, shot_id, new_shot = evt
+                    
+                    # Update shot history
+                    if shot_id not in self.app_state.shot_history:
+                        self.app_state.shot_history[shot_id] = []
+                    
+                    # Add current shot text to history before replacing
+                    current_shot = next((s for s in self.app_state.shots if s.id == shot_id), None)
+                    if current_shot and current_shot.text.strip():
+                        self.app_state.shot_history[shot_id].append(current_shot.text.strip())
+                    
+                    # Update the shot in app_state
+                    for i, shot in enumerate(self.app_state.shots):
+                        if shot.id == shot_id:
+                            self.app_state.shots[i] = new_shot
+                            break
+                    
+                    # Update the textbox
+                    widgets = self.shot_widgets.get(shot_id)
+                    if widgets:
+                        txt_widget = widgets.get("txt")
+                        if txt_widget:
+                            txt_widget.delete("1.0", "end")
+                            txt_widget.insert("1.0", new_shot.text)
+                        
+                        # Reset UI
+                        btn_retry = widgets.get("btn_retry")
+                        status_indicator = widgets.get("status_indicator")
+                        if btn_retry:
+                            btn_retry.configure(state="normal", text="🔄 Retry Shot")
+                        if status_indicator:
+                            prev_count = len(self.app_state.shot_history.get(shot_id, []))
+                            status_indicator.configure(text=f"✅ Updated ({prev_count} attempts)", text_color="#10b981")
+                    
+                    self._on_log(f"✅ Shot {shot_id} retry complete")
+                    prev_count = len(self.app_state.shot_history.get(shot_id, []))
+                    if prev_count > 1:
+                        self.show_toast(f"🎬 Shot {shot_id} updated! ({prev_count} attempts total)", duration_ms=2000)
+                        self._on_log(f"💡 Tip: Shot {shot_id} now has {prev_count} attempts. You can retry again for more variations!")
+                    else:
+                        self.show_toast(f"🎬 Shot {shot_id} updated with fresh perspective!", duration_ms=2000)
+                        self._on_log(f"💡 Tip: Shot {shot_id} retry complete. You can retry again for more variations!")
+                elif kind == "shot_retry_error":
+                    _k, shot_id, error_msg = evt
+                    widgets = self.shot_widgets.get(shot_id)
+                    if widgets:
+                        btn_retry = widgets.get("btn_retry")
+                        status_indicator = widgets.get("status_indicator")
+                        if btn_retry:
+                            btn_retry.configure(state="normal", text="🔄 Retry Shot")
+                        if status_indicator:
+                            status_indicator.configure(text="❌ Retry Failed", text_color="#ef4444")
+                    self._on_log(f"❌ Shot {shot_id} retry failed: {error_msg}")
+                    self.show_toast(f"❌ Shot {shot_id} retry failed. Check log for details.", duration_ms=3000)
                 elif kind == "auto_upscaled":
                     _k, shot_id, up_url, up_bytes, upscaled_saved_path, original_saved_path = evt
                     self.app_state.upscaled[shot_id] = up_bytes
@@ -887,8 +942,30 @@ class MaestroApp(ctk.CTk):
         )
         # tooltips disabled
 
+        btn_retry = ctk.CTkButton(
+            left_section,
+            text="🔄 Retry Shot",
+            command=lambda s=shot, t_ref=txt: self._retry_shot(s.id, t_ref),
+            height=36,
+            font=ctk.CTkFont(size=13),
+            fg_color="#f59e0b",
+            hover_color="#d97706"
+        )
+        
+        # Add helpful tooltip for retry button
+        def show_retry_tooltip(event):
+            prev_count = len(self.app_state.shot_history.get(shot.id, []))
+            if prev_count > 0:
+                tooltip_text = f"Retry shot {shot.id} with {prev_count} previous attempts as context for a fresh perspective"
+            else:
+                tooltip_text = f"Retry shot {shot.id} to get a new creative approach"
+            self.show_toast(tooltip_text, duration_ms=2000)
+        
+        btn_retry.bind("<Enter>", show_retry_tooltip)
+
         txt.pack(pady=(0, 8), fill="x")
         btn_gen.pack(fill="x")
+        btn_retry.pack(fill="x", pady=(4, 0))
 
         # Right side: preview and action buttons
         right_section = ctk.CTkFrame(content_frame, fg_color="transparent")
@@ -904,6 +981,7 @@ class MaestroApp(ctk.CTk):
             "container": shot_container,
             "txt": txt,
             "btn_gen": btn_gen,
+            "btn_retry": btn_retry,
             "preview": preview,
             "btn_save": action_buttons["btn_save"],
             "status_indicator": status_indicator,
@@ -1066,6 +1144,61 @@ class MaestroApp(ctk.CTk):
                 pass
 
         self.after(50, on_event)
+
+    def _retry_shot(self, shot_id: int, txt_widget: ctk.CTkTextbox) -> None:
+        """Retry generation of a single shot description with helpful UX."""
+        self._on_log(f"🔄 Retrying shot {shot_id}")
+        
+        if not self.app_state.middle_frame_data_url:
+            self._on_log("❌ No middle frame available for retry")
+            self.show_toast("No middle frame available. Run Analyze first.", duration_ms=3000)
+            return
+        
+        # Get current context
+        ctx = self.txt_context.get("1.0", "end").strip()
+        if not ctx:
+            self._on_log("❌ Context is empty for retry")
+            self.show_toast("Context is empty.", duration_ms=3000)
+            return
+        
+        # Get previous attempts for this shot
+        previous_shots = self.app_state.shot_history.get(shot_id, [])
+        prev_count = len(previous_shots)
+        
+        # Update UI with helpful messages
+        widgets = self.shot_widgets.get(shot_id)
+        if widgets:
+            btn_retry = widgets.get("btn_retry")
+            status_indicator = widgets.get("status_indicator")
+            if btn_retry:
+                btn_retry.configure(state="disabled", text="⏳ Retrying...")
+            if status_indicator:
+                if prev_count > 0:
+                    status_indicator.configure(text=f"🔄 Retrying ({prev_count} prev attempts)...", text_color="#f59e0b")
+                else:
+                    status_indicator.configure(text="🔄 Retrying (fresh attempt)...", text_color="#f59e0b")
+        
+        # Show helpful toast message with tips
+        if prev_count > 0:
+            self.show_toast(f"🔄 Retrying shot {shot_id} with {prev_count} previous attempts as context...", duration_ms=3000)
+            self._on_log(f"💡 Tip: Shot {shot_id} has {prev_count} previous attempts. The AI will generate a different approach.")
+        else:
+            self.show_toast(f"🔄 Retrying shot {shot_id} with fresh perspective...", duration_ms=3000)
+            self._on_log(f"💡 Tip: First retry for shot {shot_id}. The AI will provide a new creative approach.")
+        
+        def worker() -> None:
+            try:
+                new_shot = self.pipeline.retry_single_shot(
+                    self.app_state.middle_frame_data_url or "",
+                    ctx,
+                    shot_id,
+                    previous_shots
+                )
+                self.events.put(("shot_retry_done", shot_id, new_shot))
+            except Exception as e:
+                self.events.put(("shot_retry_error", shot_id, str(e)))
+        
+        threading.Thread(target=worker, daemon=True).start()
 
     def _generate_shots_from_context(self) -> None:
         self._on_log("🎭 Generating shots from context")
