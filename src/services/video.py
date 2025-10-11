@@ -114,9 +114,6 @@ def sample_context_frames_as_data_urls(video_bytes: bytes, n: int = 5) -> List[s
     return [image_to_data_url(img, format="JPEG", quality=85) for img in images]
 
 
-def sample_middle_frame_as_data_url(video_bytes: bytes) -> str:
-    images = extract_frames_as_images(video_bytes, n=5)
-    middle = images[len(images) // 2]
-    return image_to_data_url(middle, format="JPEG", quality=85)
+# Middle frame extraction removed - director now always uses style image
 
 

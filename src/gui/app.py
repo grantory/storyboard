@@ -10,7 +10,7 @@ from src.config import load_config
 from src.gui.pipeline import Pipeline
 from src.gui.state import AppState
 from src.gui.utils_images import data_url_to_ctkimage
-from src.services.video import sample_middle_frame_as_data_url
+# sample_middle_frame_as_data_url removed - director now uses style image
 from src.services import connectivity_probe, openrouter_models_probe, openrouter_chat_probe
 
 
@@ -639,14 +639,18 @@ class MaestroApp(ctk.CTk):
             file_size = len(self.app_state.video_bytes)
             self._on_log(f"✅ Video loaded successfully: {os.path.basename(path)} ({file_size:,} bytes)")
 
-            # Build and show middle-frame preview
+            # Build and show video preview using first context frame
             self._on_log("🖼️  Generating video preview...")
             try:
-                data_url = sample_middle_frame_as_data_url(self.app_state.video_bytes)
-                cimg = data_url_to_ctkimage(data_url, max_width=150)
-                self.lbl_video_preview.configure(image=cimg, text="")
-                self.lbl_video_preview._image_ref = cimg  # type: ignore[attr-defined]
-                self._on_log("✅ Video preview generated successfully")
+                from src.services.video import sample_context_frames_as_data_urls
+                frame_urls = sample_context_frames_as_data_urls(self.app_state.video_bytes, n=1)
+                if frame_urls:
+                    cimg = data_url_to_ctkimage(frame_urls[0], max_width=150)
+                    self.lbl_video_preview.configure(image=cimg, text="")
+                    self.lbl_video_preview._image_ref = cimg  # type: ignore[attr-defined]
+                    self._on_log("✅ Video preview generated successfully")
+                else:
+                    self._on_log("⚠️  No frames extracted for preview")
             except Exception as e:  # noqa: BLE001
                 self._on_log(f"⚠️  Video preview failed: {e}")
         except Exception as e:
@@ -724,9 +728,9 @@ class MaestroApp(ctk.CTk):
         def worker() -> None:
             self._on_log("🧵 Context analysis worker started")
             try:
-                ctx, middle = self.pipeline.analyze_context(self.app_state.video_bytes or b"", cancel=self.app_state.cancel_event)
+                ctx = self.pipeline.analyze_context(self.app_state.video_bytes or b"", cancel=self.app_state.cancel_event)
                 self._on_log("✅ Context analysis completed successfully")
-                self.events.put(("context_done", ctx, middle))
+                self.events.put(("context_done", ctx, ""))  # No middle frame needed - director uses style image
             except Exception as e:  # noqa: BLE001
                 self._on_log(f"❌ Context analysis failed with exception: {e}")
                 self.events.put(("error", str(e)))
@@ -741,15 +745,15 @@ class MaestroApp(ctk.CTk):
                 evt = self.events.get_nowait()
                 kind = evt[0]
                 if kind == "context_done":
-                    _k, ctx, middle = evt
-                    self._on_log(f"📝 Context received: {len(ctx)} chars. Middle frame ready.")
+                    _k, ctx, _middle = evt  # Middle frame no longer used
+                    self._on_log(f"📝 Context received: {len(ctx)} chars. Style image required for director.")
                     self.app_state.context_text = ctx
-                    self.app_state.middle_frame_data_url = middle
+                    # No middle frame needed - director will use style image
                     self.txt_context.delete("1.0", "end")
                     self.txt_context.insert("1.0", ctx)
                     self._update_word_count()
 
-                    # Reset UI state; enable Generate Shots
+                    # Reset UI state; enable Generate Shots (requires style image)
                     self.btn_analyze.configure(state="normal", text="🔍 Analyze Video (Context)")
                     # Cancel button removed
                     self._refresh_action_buttons_state()
@@ -1281,12 +1285,10 @@ class MaestroApp(ctk.CTk):
         """Retry generation of a single shot description with helpful UX."""
         self._on_log(f"🔄 Retrying shot {shot_id}")
         
-        # We support retry using either middle frame (video) or style image when no video
-        has_middle = bool(self.app_state.middle_frame_data_url)
-        has_style = bool(self.app_state.style_data_url)
-        if not (has_middle or has_style):
-            self._on_log("❌ No reference image available for retry")
-            self.show_toast("Upload a video or style image first.", duration_ms=3000)
+        # Director now always uses style image - no middle frame
+        if not self.app_state.style_data_url:
+            self._on_log("❌ No style image available for retry")
+            self.show_toast("Upload a style image first.", duration_ms=3000)
             return
         
         # Get current context
@@ -1323,22 +1325,12 @@ class MaestroApp(ctk.CTk):
         
         def worker() -> None:
             try:
-                if has_middle:
-                    new_shot = self.pipeline.retry_single_shot(
-                        self.app_state.middle_frame_data_url or "",
-                        ctx,
-                        shot_id,
-                        previous_shots,
-                        image_type="middle_frame",
-                    )
-                else:
-                    new_shot = self.pipeline.retry_single_shot(
-                        self.app_state.style_data_url or "",
-                        ctx,
-                        shot_id,
-                        previous_shots,
-                        image_type="style_image",
-                    )
+                new_shot = self.pipeline.retry_single_shot(
+                    self.app_state.style_data_url,
+                    ctx,
+                    shot_id,
+                    previous_shots,
+                )
                 self.events.put(("shot_retry_done", shot_id, new_shot))
             except Exception as e:
                 self.events.put(("shot_retry_error", shot_id, str(e)))
@@ -1347,19 +1339,12 @@ class MaestroApp(ctk.CTk):
 
     def _generate_shots_from_context(self) -> None:
         self._on_log("🎭 Generating shots from context")
-        # Choose reference: prefer middle frame; fallback to style image
-        reference_image = None
-        image_type = None
-        if self.app_state.middle_frame_data_url:
-            reference_image = self.app_state.middle_frame_data_url
-            image_type = "middle_frame"
-        elif self.app_state.style_data_url:
-            reference_image = self.app_state.style_data_url
-            image_type = "style_image"
-        else:
-            self._on_log("❌ No reference image available - upload video or style image first")
-            self.show_toast("Upload a video or style image first.", duration_ms=3000)
+        # Director now always uses style image - no middle frame
+        if not self.app_state.style_data_url:
+            self._on_log("❌ No style image available - upload a style image first")
+            self.show_toast("Upload a style image first.", duration_ms=3000)
             return
+        
         # Read latest edited context
         ctx = self.txt_context.get("1.0", "end").strip()
         if not ctx:
@@ -1376,20 +1361,12 @@ class MaestroApp(ctk.CTk):
         def worker() -> None:
             self._on_log("🧵 Director worker thread started")
             try:
-                if image_type == "middle_frame":
-                    shots = self.pipeline.generate_shots_from_context(
-                        reference_image or "",
-                        ctx,
-                        cancel=self.app_state.cancel_event,
-                        shot_count=self.app_state.shot_count,
-                    )
-                else:
-                    shots = self.pipeline.generate_shots_from_style_image(
-                        reference_image or "",
-                        ctx,
-                        cancel=self.app_state.cancel_event,
-                        shot_count=self.app_state.shot_count,
-                    )
+                shots = self.pipeline.generate_shots_from_context(
+                    self.app_state.style_data_url,
+                    ctx,
+                    cancel=self.app_state.cancel_event,
+                    shot_count=self.app_state.shot_count,
+                )
                 self.events.put(("shots_done", shots))
             except Exception as e:  # noqa: BLE001
                 self.events.put(("error", f"Generate shots failed: {e}"))

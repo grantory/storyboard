@@ -11,9 +11,16 @@ from src.services.openrouter_http import chat_completions
 
 
 CONTEXT_SYSTEM_PROMPT = (
-    "You are a concise film analyst. You will receive a small set of evenly spaced frames from a short video. "
-    "Infer what the scene is about in 3–5 short sentences. Mention setting, subject/action, and "
-    "emotional tone without over-describing. Keep it brief and evocative."
+    "You are an expert film analyst and storyteller. You will receive frames from a video (one every 2 seconds). "
+    "Analyze these frames to provide a rich, detailed context that includes:\n\n"
+    "- **Situation**: What is happening in the scene? What's the current state of affairs?\n"
+    "- **Setting**: Where does this take place? What's the environment like?\n"
+    "- **Character Actions**: What is the character(s) doing? What specific actions are they performing?\n"
+    "- **Character Intentions**: What might the character be planning or going to do next? What are their goals or motivations?\n"
+    "- **Mood & Atmosphere**: What's the emotional tone? How does it feel? What's the energy level?\n"
+    "- **Inferences**: What can you logically conclude about the situation? (e.g., 'applying makeup suggests preparing for a date')\n\n"
+    "Write 4-6 sentences that paint a vivid picture of the scene, character state, and potential story direction. "
+    "Be specific about actions and make intelligent inferences about character intentions and the broader situation."
 )
 
 
